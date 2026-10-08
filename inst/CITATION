@@ -1,0 +1,31 @@
+citHeader("To cite csmGmmCorr in publications, cite the software and the csmGmm article:")
+
+bibentry(
+  bibtype = "Manual",
+  title = "csmGmmCorr: Correlated Conditionally Symmetric Multidimensional Gaussian Mixtures for Composite Null Testing",
+  author = c(person("Z.", "Liu")),
+  year = "2026",
+  note = "R package version 1.3.0",
+  textVersion = paste(
+    "Liu Z. (2026). csmGmmCorr: Correlated Conditionally Symmetric",
+    "Multidimensional Gaussian Mixtures for Composite Null Testing.",
+    "R package version 1.3.0."
+  )
+)
+
+bibentry(
+  bibtype = "Article",
+  title = "Testing a Large Number of Composite Null Hypotheses Using Conditionally Symmetric Multidimensional Gaussian Mixtures in Genome-Wide Studies",
+  author = c(person("Ryan", "Sun"), person("Zachary", "McCaw"), person("Xihong", "Lin")),
+  journal = "Journal of the American Statistical Association",
+  year = "2025",
+  volume = "120",
+  pages = "605--617",
+  doi = "10.1080/01621459.2024.2422124",
+  textVersion = paste(
+    "Sun R, McCaw Z, and Lin X (2025). Testing a Large Number of Composite",
+    "Null Hypotheses Using Conditionally Symmetric Multidimensional Gaussian",
+    "Mixtures in Genome-Wide Studies. Journal of the American Statistical",
+    "Association 120, 605-617. doi:10.1080/01621459.2024.2422124."
+  )
+)
