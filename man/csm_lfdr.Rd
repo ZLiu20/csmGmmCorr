@@ -1,36 +1,44 @@
 \name{csm_lfdr}
 \alias{csm_lfdr}
 \alias{csm_null_components}
-\title{Local false discovery rates for composite nulls}
-\description{
-Computes the posterior probability that a feature's signed configuration lies
-in the null set of the chosen target. Only the null set depends on the
-target, so one fit serves all targets and thresholds.
-}
+\title{Target-specific local false discovery rates}
 \usage{
-csm_lfdr(object, Z, target = c("pleiotropy", "replication", "mediation"),
-         t = 1L, pairs = NULL, spec = NULL, block_cells = 5e6, cores = 1L)
-
-csm_null_components(H, target = c("pleiotropy", "replication", "mediation"),
-                    t = 1L, pairs = NULL)
+csm_lfdr(object, z,
+  target = c("pleiotropy", "replication", "mediation"),
+  t = 1L, pairs = NULL, spec = NULL, block_cells = 5e6, cores = 1L)
+csm_null_components(H,
+  target = c("pleiotropy", "replication", "mediation"),
+  t = 1L, pairs = NULL)
 }
 \arguments{
-\item{object}{a \code{\link{csm_fit}} object or a \code{\link{csm_params}}
-object (then \code{spec} is required).}
-\item{Z}{test statistics, a matrix with \eqn{K} columns or one vector.}
-\item{target}{\code{"pleiotropy"}: more than \code{t} nonzero effects;
-\code{"replication"}: more than \code{t} nonzero effects, all with the same
-sign; \code{"mediation"}: at least one complete pair and more than \code{t}
-nonzero effects.}
-\item{t}{threshold, \eqn{1 \le t < K}.}
-\item{pairs}{for mediation, a two-column matrix of the exposure--mediator and
-mediator--outcome coordinates of each mediator; by default
-\eqn{(1,2), (3,4), \ldots}.}
-\item{spec}{a \code{\link{csm_spec}} object.}
-\item{block_cells, cores}{see \code{\link{csm_control}}.}
-\item{H}{a matrix of signed configurations with entries in \eqn{\{-1,0,1\}}.}
+\item{object}{A fitted model or parameter object.}
+\item{z}{Matrix of z-statistics.}
+\item{target}{Scientific composite-null target.}
+\item{t}{Required support threshold.}
+\item{pairs}{Two-column coordinate-pair matrix for mediation.}
+\item{spec}{Required when \code{object} contains parameters only.}
+\item{block_cells, cores}{Evaluation controls.}
+\item{H}{Matrix of signed configurations.}
 }
-\value{
-\code{csm_lfdr} returns a numeric vector. \code{csm_null_components} returns
-a logical vector that is \code{TRUE} for null configurations.
+\value{A local-fdr vector, or a logical null-component indicator.}
+\description{Sum posterior mixture mass over the scientific null states.}
+\details{
+For pleiotropy, the alternative contains configurations with more than
+\code{t} active coordinates.  For replication, those coordinates must also
+have a common sign.  For mediation, the alternative requires more than
+\code{t} active coordinates and at least one complete pair listed in
+\code{pairs}.  Consequently, the mediation target can depend on \code{t}; a
+complete path alone is not sufficient when its support does not exceed the
+threshold.
+
+When \code{pairs} is omitted, even-dimensional statistics are paired as
+(1,2), (3,4), and so forth.  Odd dimensions require an explicit two-column
+pair matrix.  \code{block_cells} and \code{cores} affect evaluation resources,
+not the fitted model or target definition.
+}
+\examples{
+H <- rbind(c(0, 0, 0, 0), c(1, 1, 0, 0), c(1, -1, 1, 0))
+csm_null_components(H, "pleiotropy", t = 1)
+csm_null_components(H, "replication", t = 1)
+csm_null_components(H, "mediation", t = 2)
 }

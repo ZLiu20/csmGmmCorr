@@ -1,227 +1,318 @@
-# Model specification, parameter objects and component enumeration.
-#
-# Notation follows the manuscript. A support is indexed by its binary label
-# b = sum_k 2^(K-k) |h_k| (coordinate 1 is the most significant bit), as in
-# Sun, McCaw and Lin (2025). A "group" is a pair (b, m) of a support and one of
-# its M_b magnitude components; a "component" is a signed configuration h on
-# that support together with m. Parameters are stored at the group level:
-#   varpi[g] = total probability of group g (= 2^|A_b| * pi_{bm}),
-#   mu[g, ]  = magnitudes of group g (positive on A_b, zero elsewhere),
-#   Sigma    = common correlation matrix.
+# Model specification, parameter validation, and signed-state enumeration.
+
+.check_integer_scalar <- function(x, name, lower, upper) {
+  ok <- is.numeric(x) && length(x) == 1L && is.finite(x) && x == round(x) &&
+    x >= lower && x <= upper
+  if (!ok) {
+    stop(sprintf("'%s' must be an integer between %d and %d.", name, lower, upper),
+         call. = FALSE)
+  }
+  as.integer(x)
+}
+
+.check_numeric_scalar <- function(x, name, lower = -Inf, upper = Inf) {
+  ok <- is.numeric(x) && length(x) == 1L && is.finite(x) &&
+    x >= lower && x <= upper
+  if (!ok) {
+    stop(sprintf("'%s' must be a finite number in [%g, %g].", name, lower, upper),
+         call. = FALSE)
+  }
+  as.numeric(x)
+}
 
 .support_table <- function(K) {
-  b <- seq_len(2L^K) - 1L
-  A <- matrix(FALSE, length(b), K)
-  for (k in seq_len(K)) A[, k] <- bitwAnd(b, 2L^(K - k)) > 0L
-  list(b = b, A = A, size = rowSums(A))
+  labels <- seq_len(2^K) - 1L
+  membership <- matrix(FALSE, nrow = length(labels), ncol = K)
+  for (k in seq_len(K)) {
+    membership[, k] <- bitwAnd(labels, bitwShiftL(1L, K - k)) != 0L
+  }
+  list(b = labels, A = membership, size = rowSums(membership))
 }
 
 .sign_patterns <- function(s) {
-  if (s == 0L) return(matrix(0L, 1L, 0L))
-  unname(as.matrix(expand.grid(rep(list(c(1L, -1L)), s))))
+  if (s == 0L) return(matrix(0L, nrow = 1L, ncol = 0L))
+  grid <- expand.grid(rep(list(c(1L, -1L)), s), KEEP.OUT.ATTRS = FALSE)
+  unname(as.matrix(grid))
 }
 
-.components <- function(K, grp_A) {
-  G <- nrow(grp_A)
-  sizes <- rowSums(grp_A)
-  n_r <- 2L^sizes
-  H <- matrix(0L, sum(n_r), K)
-  pats <- lapply(0:K, .sign_patterns)
-  start <- c(0L, cumsum(n_r))[seq_len(G)]
-  for (g in seq_len(G)) {
-    s <- sizes[g]
-    if (s > 0L) H[start[g] + seq_len(n_r[g]), which(grp_A[g, ])] <- pats[[s + 1L]]
+.block_starts <- function(counts, first = 1L) {
+  if (length(counts) <= 1L) return(as.integer(first))
+  as.integer(cumsum(c(first, counts[-length(counts)])))
+}
+
+.enumerate_components <- function(K, group_support) {
+  sizes <- rowSums(group_support)
+  per_group <- 2L^sizes
+  first <- .block_starts(per_group)
+  H <- matrix(0L, nrow = sum(per_group), ncol = K)
+  for (g in seq_len(nrow(group_support))) {
+    active <- which(group_support[g, ])
+    if (length(active)) {
+      rows <- first[g] + seq_len(per_group[g]) - 1L
+      H[rows, active] <- .sign_patterns(length(active))
+    }
   }
-  grp <- rep(seq_len(G), n_r)
-  list(H = H, grp = grp, size = sizes[grp])
+  group <- rep(seq_len(nrow(group_support)), per_group)
+  list(H = H, group = group, size = sizes[group])
 }
 
-# Sign pairs: the components h and -h of a group share their weight and the
-# magnitude of their mean, so the E-step works with one representative per
-# pair (the pattern whose last active coordinate is positive). Within each
-# group, the sign patterns are ordered so that row j and row 2^s + 1 - j are
-# negatives of each other. The null component is its own pair.
-.pairs <- function(comp, G) {
-  n_r <- tabulate(comp$grp, G)
-  start <- match(seq_len(G), comp$grp)
-  keep <- logical(nrow(comp$H))
-  for (g in seq_len(G)) keep[start[g] + seq_len(max(1L, n_r[g] %/% 2L)) - 1L] <- TRUE
-  list(H = comp$H[keep, , drop = FALSE], grp = comp$grp[keep], size = comp$size[keep],
-       self = comp$size[keep] == 0L)
-}
-
-.check_scalar <- function(x, name, lower = -Inf, upper = Inf) {
-  if (!is.numeric(x) || length(x) != 1L || !is.finite(x) || x < lower || x > upper) {
-    stop(sprintf("'%s' must be a finite number in [%g, %g].", name, lower, upper), call. = FALSE)
+.pair_components <- function(components, n_groups) {
+  counts <- tabulate(components$group, nbins = n_groups)
+  first <- .block_starts(counts)
+  keep <- logical(nrow(components$H))
+  for (g in seq_len(n_groups)) {
+    n_keep <- max(1L, counts[g] %/% 2L)
+    keep[first[g] + seq_len(n_keep) - 1L] <- TRUE
   }
-  invisible(as.numeric(x))
+  list(
+    H = components$H[keep, , drop = FALSE],
+    group = components$group[keep],
+    grp = components$group[keep],
+    size = components$size[keep],
+    self = components$size[keep] == 0L
+  )
 }
 
-# ---- Specify a correlated csmGmm ----
-csm_spec <- function(K, M = csm_structure(K, 2L, 1L), S = K, a_mu = 0.5, b_mu = NULL, kappa = 0.05) {
-  .make_spec(K, M, S, "support", a_mu, b_mu, kappa)
+#' Number of magnitude components by binary support
+#'
+#' @param K Number of coordinates.
+#' @param single Number of components for supports of size one.
+#' @param multiple Number of components for supports of size two or larger.
+#' @return Integer vector of length `2^K`; the first element is always one.
+#' @export
+csm_structure <- function(K, single = 2L, multiple = 1L) {
+  K <- .check_integer_scalar(K, "K", 2L, 12L)
+  single <- .check_integer_scalar(single, "single", 1L, .Machine$integer.max)
+  multiple <- .check_integer_scalar(multiple, "multiple", 1L, .Machine$integer.max)
+  supports <- .support_table(K)
+  out <- rep.int(as.integer(multiple), 2^K)
+  out[supports$size == 1L] <- as.integer(single)
+  out[1L] <- 1L
+  out
 }
 
-# Internal constructor. magnitudes = "shared" (one magnitude per coordinate,
-# used by every support) is used only to compute a starting value for the
-# correlated csmGmm; it is not offered as a model.
-.make_spec <- function(K, M, S, magnitudes, a_mu, b_mu, kappa) {
-  if (!is.numeric(K) || length(K) != 1L || K != round(K) || K < 2 || K > 12) {
-    stop("'K' must be an integer between 2 and 12.", call. = FALSE)
-  }
-  K <- as.integer(K)
-  if (!is.numeric(S) || length(S) != 1L || S != round(S) || S < 1 || S > K) {
-    stop("'S' must be an integer between 1 and K.", call. = FALSE)
-  }
-  S <- as.integer(S)
-  nb <- 2L^K
-  if (!is.numeric(M) || anyNA(M) || any(M != round(M)) || any(M < 1)) {
+#' Specify a correlated csmGmm
+#' @export
+csm_spec <- function(K, M = csm_structure(K, 2L, 1L), S = K,
+                     a_mu = 0.5, b_mu = NULL, kappa = 0.05) {
+  K <- .check_integer_scalar(K, "K", 2L, 12L)
+  S <- .check_integer_scalar(S, "S", 1L, K)
+  n_supports <- 2^K
+  if (!is.numeric(M) || anyNA(M) || any(!is.finite(M)) ||
+      any(M != round(M)) || any(M < 1)) {
     stop("'M' must contain positive integers.", call. = FALSE)
   }
+  if (length(M) == 1L) M <- rep.int(as.integer(M), n_supports)
+  if (length(M) != n_supports) {
+    stop("'M' must have length one or 2^K.", call. = FALSE)
+  }
   M <- as.integer(M)
-  if (length(M) == 1L) M <- rep(M, nb)
-  if (length(M) != nb) stop("'M' must have length 1 or 2^K.", call. = FALSE)
   M[1L] <- 1L
-  if (magnitudes == "shared" && any(M != 1L)) stop("Shared magnitudes require M = 1.", call. = FALSE)
-  .check_scalar(a_mu, "a_mu", 1e-8)
-  if (!is.null(b_mu)) .check_scalar(b_mu, "b_mu", a_mu * (1 + 1e-8))
-  .check_scalar(kappa, "kappa", 1e-8, 1 - 1e-8)
+  a_mu <- .check_numeric_scalar(a_mu, "a_mu", 1e-8, Inf)
+  if (!is.null(b_mu)) b_mu <- .check_numeric_scalar(b_mu, "b_mu", a_mu * (1 + 1e-8), Inf)
+  kappa <- .check_numeric_scalar(kappa, "kappa", 1e-8, 1 - 1e-8)
 
-  sup <- .support_table(K)
-  keep_b <- sup$b[sup$size <= S]
-  grp_b <- rep(keep_b, M[keep_b + 1L])
-  grp_m <- sequence(M[keep_b + 1L])
-  grp_A <- sup$A[grp_b + 1L, , drop = FALSE]
-  grp_size <- rowSums(grp_A)
-  full <- which(grp_b == nb - 1L)
-  other <- lapply(seq_len(K), function(k) which(grp_b != 0L & grp_b != nb - 1L & grp_A[, k]))
-  comp <- .components(K, grp_A)
-  pair <- .pairs(comp, length(grp_b))
+  supports <- .support_table(K)
+  kept_supports <- supports$b[supports$size <= S]
+  group_b <- rep.int(kept_supports, M[kept_supports + 1L])
+  group_m <- sequence(M[kept_supports + 1L])
+  group_A <- supports$A[group_b + 1L, , drop = FALSE]
+  group_size <- rowSums(group_A)
+  components <- .enumerate_components(K, group_A)
+  components$grp <- components$group
+  pairs <- .pair_components(components, length(group_b))
+  full <- which(group_b == n_supports - 1L)
+  other <- lapply(seq_len(K), function(k) {
+    which(group_b != 0L & group_b != n_supports - 1L & group_A[, k])
+  })
+
   structure(list(
-    K = K, S = S, M = M, magnitudes = magnitudes,
-    a_mu = as.numeric(a_mu), b_mu = if (is.null(b_mu)) NULL else as.numeric(b_mu),
-    kappa = as.numeric(kappa),
-    grp_b = grp_b, grp_m = grp_m, grp_A = grp_A, grp_size = grp_size,
-    full = full, other = other, comp = comp, pair = pair
+    K = K,
+    S = S,
+    M = M,
+    magnitudes = "support",
+    a_mu = a_mu,
+    b_mu = if (is.null(b_mu)) NULL else as.numeric(b_mu),
+    kappa = kappa,
+    grp_b = group_b,
+    grp_m = group_m,
+    grp_A = group_A,
+    grp_size = group_size,
+    full = full,
+    other = other,
+    comp = components,
+    pair = pairs
   ), class = "csm_spec")
 }
 
+.make_spec <- function(K, M, S, magnitudes = c("support", "shared"),
+                       a_mu = 0.5, b_mu = NULL, kappa = 0.05) {
+  magnitudes <- match.arg(magnitudes)
+  spec <- csm_spec(K, M, S, a_mu, b_mu, kappa)
+  spec$magnitudes <- magnitudes
+  spec
+}
+
+#' @export
 print.csm_spec <- function(x, ...) {
   cat("Correlated csmGmm specification\n")
   cat(sprintf("  K = %d, largest support size S = %d\n", x$K, x$S))
-  cat(sprintf("  groups (support x magnitude component): %d, signed components: %d\n",
+  cat(sprintf("  groups: %d; signed components: %d\n",
               length(x$grp_b), nrow(x$comp$H)))
-  cat(sprintf("  region: a_mu = %g, b_mu = %s, kappa = %g\n", x$a_mu,
-              if (is.null(x$b_mu)) "set from data at fit" else format(x$b_mu), x$kappa))
+  upper <- if (is.null(x$b_mu)) "infinity" else format(x$b_mu)
+  cat(sprintf("  magnitude interval: [%g, %s]; kappa = %g\n",
+              x$a_mu, upper, x$kappa))
   invisible(x)
 }
 
-.ordering_ok <- function(MU, spec, tol = 1e-10) {
-  if (length(spec$full) == 0L) return(TRUE)
+.ordering_ok <- function(mu, spec, tolerance = 1e-10) {
+  if (!length(spec$full)) return(TRUE)
   for (k in seq_len(spec$K)) {
-    o <- spec$other[[k]]
-    if (length(o) && min(MU[spec$full, k]) < max(MU[o, k]) - tol) return(FALSE)
+    competitors <- spec$other[[k]]
+    if (length(competitors) &&
+        min(mu[spec$full, k]) < max(mu[competitors, k]) - tolerance) {
+      return(FALSE)
+    }
   }
   TRUE
 }
 
-.feasibility <- function(p, spec, tol = 1e-8) {
+.parameter_violations <- function(par, spec, tolerance = 1e-8) {
   G <- length(spec$grp_b)
   K <- spec$K
-  msg <- character(0)
-  if (!is.numeric(p$varpi) || length(p$varpi) != G || any(!is.finite(p$varpi)) ||
-      any(p$varpi < -tol) || abs(sum(p$varpi) - 1) > 1e-6) msg <- c(msg, "weights must lie in the simplex")
-  if (!is.matrix(p$mu) || !identical(dim(p$mu), c(G, K)) || any(!is.finite(p$mu))) {
-    msg <- c(msg, "magnitude matrix has the wrong dimension")
+  problems <- character()
+  if (!is.numeric(par$varpi) || length(par$varpi) != G ||
+      any(!is.finite(par$varpi)) || any(par$varpi < -tolerance) ||
+      abs(sum(par$varpi) - 1) > tolerance) {
+    problems <- c(problems, "mixture weights must lie in the simplex")
+  }
+  if (!is.matrix(par$mu) || !identical(dim(par$mu), c(G, K)) ||
+      any(!is.finite(par$mu))) {
+    problems <- c(problems, "magnitude matrix has the wrong dimension")
   } else {
-    act <- spec$grp_A
-    if (any(p$mu[!act] != 0)) msg <- c(msg, "magnitudes must be zero outside the support")
-    if (any(p$mu[act] < spec$a_mu - tol) ||
-        (!is.null(spec$b_mu) && any(p$mu[act] > spec$b_mu + tol))) msg <- c(msg, "magnitudes outside [a_mu, b_mu]")
-    if (!.ordering_ok(p$mu, spec, tol)) msg <- c(msg, "the ordering constraint is violated")
-    if (spec$magnitudes == "shared") {
-      for (k in seq_len(K)) if (diff(range(p$mu[act[, k], k])) > tol) {
-        msg <- c(msg, "magnitudes are not shared across supports"); break
-      }
+    inactive <- !spec$grp_A
+    if (any(abs(par$mu[inactive]) > tolerance)) {
+      problems <- c(problems, "magnitudes must be zero outside the support")
+    }
+    active <- spec$grp_A
+    if (any(par$mu[active] < spec$a_mu - tolerance) ||
+        (!is.null(spec$b_mu) && any(par$mu[active] > spec$b_mu + tolerance))) {
+      problems <- c(problems, "active magnitudes fall outside the specified interval")
+    }
+    if (!.ordering_ok(par$mu, spec, tolerance)) {
+      problems <- c(problems, "magnitude ordering is violated")
     }
   }
-  S <- p$Sigma
-  if (!is.matrix(S) || !identical(dim(S), c(K, K)) || any(!is.finite(S)) ||
-      max(abs(S - t(S))) > 1e-10 || max(abs(diag(S) - 1)) > 1e-10) {
-    msg <- c(msg, "Sigma must be a K x K correlation matrix")
-  } else if (min(eigen(S, symmetric = TRUE, only.values = TRUE)$values) < spec$kappa - 1e-8) {
-    msg <- c(msg, "Sigma has an eigenvalue below kappa")
+  Sigma <- par$Sigma
+  if (!is.matrix(Sigma) || !identical(dim(Sigma), c(K, K)) ||
+      any(!is.finite(Sigma)) || max(abs(Sigma - t(Sigma))) > 1e-10 ||
+      max(abs(diag(Sigma) - 1)) > 1e-10) {
+    problems <- c(problems, "Sigma must be a K by K correlation matrix")
+  } else if (min(eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values) <
+             spec$kappa - tolerance) {
+    problems <- c(problems, "Sigma violates the eigenvalue lower bound")
   }
-  msg
+  problems
 }
 
-# ---- Construct a parameter object ----
+.feasibility <- function(par, spec, tolerance = 1e-8) {
+  .parameter_violations(par, spec, tolerance)
+}
+
+.list_argument <- function(x, label, expected) {
+  if (!is.list(x) || length(x) != expected) {
+    stop(sprintf("'%s' must be a list of length %d.", label, expected), call. = FALSE)
+  }
+  x
+}
+
+#' Construct parameters of a correlated csmGmm
+#' @export
 csm_params <- function(spec, varpi = NULL, mu, Sigma = diag(spec$K), pi = NULL) {
   if (!inherits(spec, "csm_spec")) stop("'spec' must come from csm_spec().", call. = FALSE)
+  if (is.null(varpi) == is.null(pi)) {
+    stop("Give exactly one of 'varpi' and 'pi'.", call. = FALSE)
+  }
   G <- length(spec$grp_b)
   K <- spec$K
-  if (is.null(varpi) == is.null(pi)) stop("Give exactly one of 'varpi' and 'pi'.", call. = FALSE)
-  from_list <- function(x, what) {
-    # Sun et al. list format: element b + 1 holds the values for support b.
-    if (length(x) != 2L^K) stop(sprintf("'%s' as a list must have 2^K elements.", what), call. = FALSE)
-    x
-  }
+  n_supports <- 2^K
+
   if (!is.null(pi)) {
     if (is.list(pi)) {
-      pi <- from_list(pi, "pi")
-      varpi <- vapply(seq_len(G), function(g) pi[[spec$grp_b[g] + 1L]][spec$grp_m[g]], 0)
-    } else varpi <- pi
+      pi <- .list_argument(pi, "pi", n_supports)
+      varpi <- vapply(seq_len(G), function(g) {
+        pi[[spec$grp_b[g] + 1L]][spec$grp_m[g]]
+      }, numeric(1))
+    } else {
+      varpi <- pi
+    }
     if (length(varpi) != G) stop("'pi' has the wrong length.", call. = FALSE)
-    varpi <- varpi * 2^spec$grp_size
-  } else if (is.list(varpi)) {
-    varpi <- from_list(varpi, "varpi")
-    varpi <- vapply(seq_len(G), function(g) varpi[[spec$grp_b[g] + 1L]][spec$grp_m[g]], 0)
+    # csmGmm stores the total mass of a support-component block.  The
+    # conditional sign symmetry is applied later when the block mass is
+    # distributed over its 2^s signed configurations.
+    varpi <- as.numeric(varpi)
+  } else {
+    if (is.list(varpi)) {
+      varpi <- .list_argument(varpi, "varpi", n_supports)
+      varpi <- vapply(seq_len(G), function(g) {
+        varpi[[spec$grp_b[g] + 1L]][spec$grp_m[g]]
+      }, numeric(1))
+    }
+    if (length(varpi) != G) stop("'varpi' has the wrong length.", call. = FALSE)
   }
+
   if (is.list(mu)) {
-    mu <- from_list(mu, "mu")
-    MU <- matrix(0, G, K)
+    mu <- .list_argument(mu, "mu", n_supports)
+    magnitude <- matrix(0, nrow = G, ncol = K)
     for (g in seq_len(G)) {
       b <- spec$grp_b[g]
       if (b > 0L) {
-        v <- as.matrix(mu[[b + 1L]])
-        if (nrow(v) != K) stop("Each element of 'mu' must be a K x M_b matrix.", call. = FALSE)
-        MU[g, ] <- v[, spec$grp_m[g]] * spec$grp_A[g, ]
+        block <- as.matrix(mu[[b + 1L]])
+        if (nrow(block) != K) {
+          stop("Every non-null element of 'mu' must be a K by M_b matrix.", call. = FALSE)
+        }
+        magnitude[g, ] <- block[, spec$grp_m[g]] * spec$grp_A[g, ]
       }
     }
-    mu <- MU
-  } else if (is.numeric(mu) && length(mu) == K && !is.matrix(mu)) {
-    mu <- spec$grp_A * rep(mu, each = G)
+    mu <- magnitude
+  } else if (is.numeric(mu) && !is.matrix(mu) && length(mu) == K) {
+    mu <- spec$grp_A * rep(as.numeric(mu), each = G)
   }
-  p <- list(varpi = as.numeric(varpi), mu = mu, Sigma = Sigma)
-  if (is.null(spec$b_mu)) spec$b_mu <- Inf
-  bad <- .feasibility(p, spec)
-  if (length(bad)) stop("Infeasible parameter: ", paste(bad, collapse = "; "), ".", call. = FALSE)
-  p$varpi <- pmax(p$varpi, 0) / sum(pmax(p$varpi, 0))
-  structure(p, class = "csm_params")
+
+  out <- list(varpi = as.numeric(varpi), mu = as.matrix(mu), Sigma = as.matrix(Sigma))
+  violations <- .parameter_violations(out, spec)
+  if (length(violations)) {
+    stop(sprintf("Infeasible parameter: %s.", paste(violations, collapse = "; ")), call. = FALSE)
+  }
+  out$varpi <- pmax(out$varpi, 0)
+  out$varpi <- out$varpi / sum(out$varpi)
+  structure(out, class = "csm_params")
 }
 
-# ---- Convert parameters to the list format of the csmGmm package ----
+#' Convert parameters to the list representation used by csmGmm
+#' @export
 as_sun_lists <- function(object, spec = NULL) {
   if (inherits(object, "csm_fit")) {
     spec <- object$spec
     object <- object$params
   }
-  if (is.null(spec)) stop("'spec' is required.", call. = FALSE)
+  if (is.null(spec) || !inherits(spec, "csm_spec")) {
+    stop("'spec' is required.", call. = FALSE)
+  }
   K <- spec$K
-  nb <- 2L^K
-  sup <- .support_table(K)
-  muList <- vector("list", nb)
-  piList <- vector("list", nb)
-  for (b in seq_len(nb) - 1L) {
-    g <- which(spec$grp_b == b)
+  n_supports <- 2^K
+  mu_list <- vector("list", n_supports)
+  pi_list <- vector("list", n_supports)
+  for (b in 0:(n_supports - 1L)) {
+    groups <- which(spec$grp_b == b)
     Mb <- spec$M[b + 1L]
-    if (length(g)) {
-      muList[[b + 1L]] <- t(object$mu[g, , drop = FALSE])
-      piList[[b + 1L]] <- object$varpi[g] / 2^sup$size[b + 1L]
+    if (length(groups)) {
+      mu_list[[b + 1L]] <- t(object$mu[groups, , drop = FALSE])
+      pi_list[[b + 1L]] <- object$varpi[groups]
     } else {
-      muList[[b + 1L]] <- matrix(0, K, Mb)
-      piList[[b + 1L]] <- rep(0, Mb)
+      mu_list[[b + 1L]] <- matrix(0, nrow = K, ncol = Mb)
+      pi_list[[b + 1L]] <- rep(0, Mb)
     }
   }
-  list(muList = muList, piList = piList, Sigma = object$Sigma)
+  list(muList = mu_list, piList = pi_list, Sigma = object$Sigma)
 }

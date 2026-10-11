@@ -1,109 +1,123 @@
-# Decision rule, reporting and simulation (main-text Section 3.3).
+# Decisions, diagnostics, reporting, and simulation.
 
-# ---- Step-up rule on the average local false discovery rate ----
+#' Step-up rule based on average local false discovery rates
+#' @export
 csm_stepup <- function(lfdr, q = 0.1) {
   if (!is.numeric(lfdr) || anyNA(lfdr) || any(lfdr < 0 | lfdr > 1)) {
-    stop("'lfdr' must be numeric values in [0, 1] without missing values.", call. = FALSE)
+    stop("'lfdr' must contain values in [0, 1] without missing values.", call. = FALSE)
   }
-  .check_scalar(q, "q", 0, 1)
-  J <- length(lfdr)
-  o <- order(lfdr, seq_len(J))
-  avg <- cumsum(lfdr[o]) / seq_len(J)
-  ok <- which(avg <= q)
-  r <- if (length(ok)) max(ok) else 0L
-  rejected <- logical(J)
-  if (r > 0L) rejected[o[seq_len(r)]] <- TRUE
-  list(rejected = rejected, n_rejected = r,
-       cutoff = if (r > 0L) lfdr[o[r]] else NA_real_,
-       average = if (r > 0L) avg[r] else NA_real_)
+  q <- .check_numeric_scalar(q, "q", 0, 1)
+  n <- length(lfdr)
+  ordering <- order(lfdr, seq_len(n))
+  average <- cumsum(lfdr[ordering]) / seq_len(n)
+  eligible <- which(average <= q)
+  r <- if (length(eligible)) max(eligible) else 0L
+  rejected <- logical(n)
+  if (r) rejected[ordering[seq_len(r)]] <- TRUE
+  list(
+    rejected = rejected,
+    n_rejected = r,
+    cutoff = if (r) lfdr[ordering[r]] else NA_real_,
+    average = if (r) average[r] else NA_real_
+  )
 }
 
-# ---- Extrapolation diagnostic ----
-csm_extrapolation <- function(fit, Z, target = c("pleiotropy", "replication", "mediation"),
+#' Diagnose discoveries driven by extrapolation beyond fitted magnitudes
+#' @export
+csm_extrapolation <- function(fit, z,
+                              target = c("pleiotropy", "replication", "mediation"),
                               t = 1L, rejected, cutoff, pairs = NULL, margin = 3) {
   target <- match.arg(target)
-  Z <- .check_z(Z, fit$spec$K)
-  if (!is.logical(rejected) || length(rejected) != nrow(Z)) {
-    stop("'rejected' must be a logical vector with one entry per row of 'Z'.", call. = FALSE)
+  z <- .check_z(z, fit$spec$K)
+  if (!is.logical(rejected) || length(rejected) != nrow(z)) {
+    stop("'rejected' must have one logical value per row of 'z'.", call. = FALSE)
   }
-  p <- fit$params
-  used <- p$varpi > 0
-  cap <- vapply(seq_len(fit$spec$K), function(k) {
-    v <- p$mu[used & fit$spec$grp_A[, k], k]
-    if (length(v)) max(v) else fit$spec$a_mu
-  }, 0) + margin
-  flag <- rep(NA, nrow(Z))
-  lw <- rep(NA_real_, nrow(Z))
+  par <- fit$params
+  used <- par$varpi > 0
+  caps <- vapply(seq_len(fit$spec$K), function(k) {
+    values <- par$mu[used & fit$spec$grp_A[, k], k]
+    (if (length(values)) max(values) else fit$spec$a_mu) + margin
+  }, numeric(1))
+  flag <- rep(NA, nrow(z))
+  winsorized <- rep(NA_real_, nrow(z))
   if (any(rejected)) {
-    Zr <- Z[rejected, , drop = FALSE]
-    Zw <- sign(Zr) * pmin(abs(Zr), rep(cap, each = nrow(Zr)))
-    lw[rejected] <- csm_lfdr(fit, Zw, target, t, pairs)
-    flag[rejected] <- lw[rejected] > cutoff
+    zr <- z[rejected, , drop = FALSE]
+    zw <- sign(zr) * pmin(abs(zr), rep(caps, each = nrow(zr)))
+    winsorized[rejected] <- csm_lfdr(fit, zw, target, t, pairs)
+    flag[rejected] <- winsorized[rejected] > cutoff
   }
-  list(flag = flag, lfdr_winsorized = lw, caps = cap)
+  list(flag = flag, lfdr_winsorized = winsorized, caps = caps)
 }
 
-# ---- Fit-based inference for one target ----
-csm_test <- function(fit, Z, target = c("pleiotropy", "replication", "mediation"), t = 1L,
-                     q = 0.1, pairs = NULL, adjust = FALSE, extrapolation = TRUE,
-                     allow_unconverged = FALSE) {
+#' Complete target-specific analysis from a fitted model
+#' @export
+csm_test <- function(fit, z,
+                     target = c("pleiotropy", "replication", "mediation"),
+                     t = 1L, q = 0.1, pairs = NULL, adjust = FALSE,
+                     extrapolation = TRUE, allow_unconverged = FALSE) {
   target <- match.arg(target)
   if (!inherits(fit, "csm_fit")) stop("'fit' must come from csm_fit().", call. = FALSE)
-  Z <- .check_z(Z, fit$spec$K)
-  J <- nrow(Z)
-  out <- list(target = target, t = t, q = q, J = J)
-  if ((!fit$converged && !allow_unconverged) || is.null(fit$params)) {
+  z <- .check_z(z, fit$spec$K)
+  out <- list(target = target, t = t, q = q, J = nrow(z))
+  if ((!isTRUE(fit$converged) && !allow_unconverged) || is.null(fit$params)) {
     out$status <- "failed"
-    out$lfdr <- rep(NA_real_, J)
-    out$rejected <- logical(J)
+    out$lfdr <- rep(NA_real_, nrow(z))
+    out$rejected <- logical(nrow(z))
     out$n_rejected <- 0L
     return(structure(out, class = "csm_test"))
   }
-  out$status <- if (fit$converged) "ok" else "unconverged"
-  lfdr <- csm_lfdr(fit, Z, target, t, pairs, cores = fit$control$cores)
-  su <- csm_stepup(lfdr, q)
-  out$lfdr <- lfdr
-  out$rejected <- su$rejected
-  out$n_rejected <- su$n_rejected
-  out$cutoff <- su$cutoff
+  out$status <- if (isTRUE(fit$converged)) "ok" else "unconverged"
+  out$lfdr <- csm_lfdr(fit, z, target, t, pairs, cores = fit$control$cores)
+  decision <- csm_stepup(out$lfdr, q)
+  out$rejected <- decision$rejected
+  out$n_rejected <- decision$n_rejected
+  out$cutoff <- decision$cutoff
   if (extrapolation) {
-    ex <- csm_extrapolation(fit, Z, target, t, su$rejected, su$cutoff, pairs)
-    out$extrapolation <- ex$flag
-    out$lfdr_winsorized <- ex$lfdr_winsorized
+    diagnostic <- csm_extrapolation(fit, z, target, t, out$rejected,
+                                    decision$cutoff, pairs)
+    out$extrapolation <- diagnostic$flag
+    out$lfdr_winsorized <- diagnostic$lfdr_winsorized
   }
-  if (adjust) out$adjusted <- csm_adjust(Z, lfdr, target, t, q)
+  if (adjust) out$adjusted <- csm_adjust(z, out$lfdr, target, t, q)
   structure(out, class = "csm_test")
 }
 
-predict.csm_fit <- function(object, newdata, target = c("pleiotropy", "replication", "mediation"),
+#' @export
+predict.csm_fit <- function(object, newdata,
+                            target = c("pleiotropy", "replication", "mediation"),
                             t = 1L, pairs = NULL, ...) {
   csm_lfdr(object, newdata, match.arg(target), t, pairs)
 }
 
+#' @export
 print.csm_test <- function(x, ...) {
-  cat(sprintf("Correlated csmGmm test: %s, t = %d, q = %g, %d features\n", x$target,
-              as.integer(x$t), x$q, x$J))
+  cat(sprintf("Correlated csmGmm test: %s, t = %d, q = %g, %d features\n",
+              x$target, as.integer(x$t), x$q, x$J))
   if (x$status == "failed") {
     cat("  Fit failed: no discoveries.\n")
     return(invisible(x))
   }
   if (x$status == "unconverged") cat("  WARNING: based on an unconverged fit.\n")
   cat(sprintf("  discoveries (unadjusted lfdr): %d\n", x$n_rejected))
-  if (!is.null(x$extrapolation) && x$n_rejected > 0L) {
-    cat(sprintf("  flagged as extrapolation-driven: %d\n", sum(x$extrapolation, na.rm = TRUE)))
+  if (!is.null(x$extrapolation) && x$n_rejected) {
+    cat(sprintf("  flagged as extrapolation-driven: %d\n",
+                sum(x$extrapolation, na.rm = TRUE)))
   }
-  if (!is.null(x$adjusted)) cat(sprintf("  discoveries (monotone adjustment): %d\n", x$adjusted$n_rejected))
+  if (!is.null(x$adjusted)) {
+    cat(sprintf("  discoveries (monotone adjustment): %d\n", x$adjusted$n_rejected))
+  }
   invisible(x)
 }
 
-# ---- Simulate from a correlated csmGmm ----
+#' Simulate from a correlated csmGmm
+#' @export
 csm_simulate <- function(n, params, spec) {
   if (!inherits(spec, "csm_spec")) stop("'spec' must come from csm_spec().", call. = FALSE)
-  .check_scalar(n, "n", 1)
-  cp <- spec$comp
-  w <- params$varpi[cp$grp] / 2^cp$size
-  r <- sample.int(length(w), n, replace = TRUE, prob = w)
-  Mean <- cp$H[r, , drop = FALSE] * params$mu[cp$grp[r], , drop = FALSE]
-  Z <- Mean + matrix(stats::rnorm(n * spec$K), n) %*% chol(params$Sigma)
-  list(Z = Z, H = cp$H[r, , drop = FALSE], group = cp$grp[r])
+  n <- .check_integer_scalar(n, "n", 1L, .Machine$integer.max)
+  pair <- spec$comp
+  weights <- params$varpi[pair$group] / 2^pair$size
+  state <- sample.int(nrow(pair$H), n, replace = TRUE, prob = weights)
+  means <- pair$H[state, , drop = FALSE] * params$mu[pair$group[state], , drop = FALSE]
+  noise <- matrix(stats::rnorm(n * spec$K), nrow = n) %*% chol(params$Sigma)
+  list(Z = means + noise, H = pair$H[state, , drop = FALSE], group = pair$group[state])
 }

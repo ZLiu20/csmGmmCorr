@@ -4,23 +4,21 @@ Title: Correlated Conditionally Symmetric Multidimensional Gaussian Mixtures
     for Composite Null Testing
 Version: 1.3.0
 Authors@R: c(
-    person("Z.", "Liu", email = "ZLiu20@mdanderson.org", role = c("aut", "cre")),
+    person("Z.", "Liu", email = "zliu20@mdanderson.org", role = c("aut", "cre")),
     person("Ryan", "Sun", role = "ctb",
            comment = "Author of the csmGmm method and package on which this package builds"))
-Description: Implements the correlated conditionally symmetric multidimensional
-    Gaussian mixture (correlated csmGmm) for testing composite null hypotheses
-    of the form "more than t nonzero effects" with correlated test statistics.
-    The model extends csmGmm (Sun, McCaw and Lin, 2025,
-    <doi:10.1080/01621459.2024.2422124>) by a common within-feature correlation
-    matrix while keeping support-specific weights, support-specific magnitude
-    components and the magnitude-ordering constraint. One fit serves
-    pleiotropy, same-sign replication and mediation targets for any threshold
-    t. Parameters are estimated by a constrained expectation conditional
-    maximization algorithm from several starting values; local false discovery
-    rates are thresholded by the step-up rule of Sun and Cai (2007). An optional
-    monotone adjustment enforces a prespecified ranking order, and an
-    extrapolation diagnostic flags discoveries driven by statistics far beyond
-    the fitted magnitudes.
+Description: Fits a correlated conditionally symmetric multidimensional
+    Gaussian mixture for composite-null testing when several statistics from
+    the same feature are correlated. The model retains support-specific
+    weights and magnitude components, a common within-feature correlation
+    matrix, and a coordinatewise magnitude-ordering restriction. A single fit
+    supports pleiotropy, same-sign replication, and mediation targets for any
+    threshold. Estimation uses constrained expectation conditional
+    maximization from multiple starts. Local false discovery rates are
+    converted to discoveries by the Sun and Cai step-up rule. The package
+    extends the conditionally symmetric mixture framework of Sun, McCaw, and
+    Lin (2025) <doi:10.1080/01621459.2024.2422124>. Optional tools impose a
+    specified monotone ordering and diagnose extrapolation.
 License: GPL (>= 3)
 URL: https://github.com/ZLiu20/csmGmmCorr
 BugReports: https://github.com/ZLiu20/csmGmmCorr/issues

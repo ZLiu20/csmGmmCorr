@@ -1,43 +1,39 @@
 \name{csm_params}
 \alias{csm_params}
 \alias{as_sun_lists}
-\title{Parameters of a correlated csmGmm}
-\description{
-\code{csm_params} builds and checks a parameter for a given specification.
-\code{as_sun_lists} converts a parameter to the list format of the csmGmm
-package.
-}
+\title{Construct or convert csmGmm parameters}
 \usage{
 csm_params(spec, varpi = NULL, mu, Sigma = diag(spec$K), pi = NULL)
-
 as_sun_lists(object, spec = NULL)
 }
 \arguments{
-\item{spec}{a \code{\link{csm_spec}} object.}
-\item{varpi}{total probability of each support and magnitude component, either
-a vector with one entry per group (support and component, in the order of
-\code{spec$grp_b} and \code{spec$grp_m}) or a list of length \eqn{2^K} whose
-element \eqn{b+1} is the vector for support \eqn{b}.}
-\item{pi}{alternatively, the probability of one signed configuration and
-component, \eqn{\pi_{bm} = \varpi_{bm}/2^{|A_b|}}, in either format.}
-\item{mu}{magnitudes: a group-by-\eqn{K} matrix with zeros outside each
-support; a list of length \eqn{2^K} whose element \eqn{b+1} is a
-\eqn{K \times M_b} matrix (the csmGmm \code{initMuList} format); or a vector of
-length \eqn{K}, used for every support.}
-\item{Sigma}{correlation matrix.}
-\item{object}{a \code{csm_fit} object or a parameter.}
+\item{spec}{A model specification from \code{csm_spec}.}
+\item{varpi}{Support-component probabilities, as a vector or support list.}
+\item{mu}{Magnitude matrix, coordinate vector, or csmGmm magnitude list.}
+\item{Sigma}{Common conditional correlation matrix.}
+\item{pi}{Alternative signed-component probabilities in csmGmm list format.}
+\item{object}{A parameter object or fitted model.}
 }
-\value{
-\code{csm_params} returns an object of class \code{csm_params}, a list with
-\code{varpi}, \code{mu} and \code{Sigma}. It stops if the parameter violates the
-simplex, the magnitude box, the ordering constraint, the restrictions of
-\code{spec}, or \eqn{\Sigma \succeq \kappa I}. \code{as_sun_lists} returns a
-list with \code{muList}, \code{piList} and \code{Sigma}.
+\value{\code{csm_params()} returns validated parameters;
+\code{as_sun_lists()} returns \code{muList}, \code{piList}, and \code{Sigma}.}
+\description{Create validated model parameters or convert them to the list
+representation used by the original csmGmm implementation.}
+\details{
+\code{varpi[g]} is the total probability of support-magnitude group \code{g}.
+For a support of size \eqn{s}, that mass is divided uniformly among the
+\eqn{2^s} signs during likelihood evaluation.  The elements of a csmGmm
+\code{piList} use the same block-mass convention; they must not be divided by
+\eqn{2^s} before conversion.
+
+Inactive entries of \code{mu} must be zero.  Active entries must lie between
+the bounds in \code{spec}, obey the magnitude ordering, and be paired with a
+correlation matrix whose smallest eigenvalue is at least \code{kappa}.
 }
 \examples{
-spec <- csm_spec(3, b_mu = 10)
-lam <- c(0.8, 0.12, 0.05, 0.03)   # probabilities of support sizes 0..3
-p <- csm_params(spec, varpi = lam[spec$grp_size + 1] / choose(3, spec$grp_size),
-                mu = c(2, 2.5, 3), Sigma = 0.8 * diag(3) + 0.2)
-str(as_sun_lists(p, spec)$piList)
+spec <- csm_spec(2, M = 1, b_mu = 10)
+weights <- c(0.7, 0.1, 0.1, 0.1)
+params <- csm_params(spec, varpi = weights,
+                     mu = 2 * spec$grp_A, Sigma = diag(2))
+lists <- as_sun_lists(params, spec)
+sum(unlist(lists$piList))
 }

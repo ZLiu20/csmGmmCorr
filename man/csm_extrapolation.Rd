@@ -1,24 +1,19 @@
 \name{csm_extrapolation}
 \alias{csm_extrapolation}
-\title{Extrapolation diagnostic}
-\description{
-Recomputes the local false discovery rate of each discovery after winsorizing
-\eqn{|z_k|} at the largest fitted magnitude of coordinate \eqn{k} plus
-\code{margin}, and flags discoveries whose recomputed score exceeds the largest
-unadjusted score among the discoveries. This is a descriptive check, not an
-inferential procedure.
-}
+\title{Diagnose magnitude extrapolation}
 \usage{
-csm_extrapolation(fit, Z, target = c("pleiotropy", "replication", "mediation"),
-                  t = 1L, rejected, cutoff, pairs = NULL, margin = 3)
+csm_extrapolation(fit, z,
+  target = c("pleiotropy", "replication", "mediation"),
+  t = 1L, rejected, cutoff, pairs = NULL, margin = 3)
 }
 \arguments{
-\item{fit}{a \code{\link{csm_fit}} object.}
-\item{Z}{test statistics.}
-\item{target, t, pairs}{see \code{\link{csm_lfdr}}.}
-\item{rejected}{logical vector of discoveries.}
-\item{cutoff}{largest unadjusted score among the discoveries.}
-\item{margin}{winsorization margin.}
+\item{fit}{A fitted model.}
+\item{z}{Matrix of z-statistics.}
+\item{target, t, pairs}{Composite-null definition.}
+\item{rejected}{Logical rejection vector.}
+\item{cutoff}{Local-fdr cutoff from the step-up rule.}
+\item{margin}{Amount added to the largest fitted magnitude before winsorization.}
 }
-\value{A list with \code{flag} (\code{NA} for non-discoveries),
-\code{lfdr_winsorized} and \code{caps}.}
+\value{Flags, winsorized local false discovery rates, and coordinate caps.}
+\description{Flags discoveries that disappear after extreme coordinates are
+winsorized to a range supported by the fitted magnitude components.}

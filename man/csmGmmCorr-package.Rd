@@ -1,34 +1,28 @@
 \name{csmGmmCorr-package}
 \alias{csmGmmCorr-package}
 \alias{csmGmmCorr}
-\docType{package}
-\title{Correlated csmGmm for composite null testing}
+\title{Correlated conditionally symmetric Gaussian mixtures}
 \description{
-The correlated conditionally symmetric multidimensional Gaussian mixture extends
-csmGmm (Sun, McCaw and Lin, 2025) to correlated test statistics by a common
-within-feature correlation matrix. Support-specific weights, support-specific
-magnitude components and the magnitude-ordering constraint of csmGmm are kept,
-and all \eqn{3^K} signed configurations are represented. One fit serves the
-pleiotropy, replication and mediation targets \eqn{K(h) > t} for every
-threshold \eqn{t}.
-
-Typical use: \code{\link{csm_spec}} to specify the model,
-\code{\link{csm_fit}} to estimate it on training statistics, and
-\code{\link{csm_test}} to compute local false discovery rates and discoveries
-on test statistics. \code{\link{csm_adjust}} gives the optional monotone
-adjustment.
+The package fits a conditionally symmetric multidimensional Gaussian mixture
+with a common correlation matrix.  Rows are features and columns are the
+possibly correlated statistics observed for each feature.  One fitted model
+can be scored under pleiotropy, same-sign replication, or paired-mediation
+composite null hypotheses.
 }
-\references{
-Sun, R., McCaw, Z. R., and Lin, X. (2025). Testing a large number of composite
-null hypotheses using conditionally symmetric multidimensional Gaussian
-mixtures in genome-wide studies. \emph{Journal of the American Statistical
-Association} 120, 605--617.
+\details{
+For every retained binary support, the model assigns one or more magnitude
+components and distributes each component's probability uniformly over its
+signed configurations.  All components share a positive-definite correlation
+matrix.  Active magnitudes are estimated subject to bounds and the specified
+cross-support ordering restriction.
 
-Sun, W., and Cai, T. T. (2007). Oracle and adaptive compound decision rules for
-false discovery rate control. \emph{Journal of the American Statistical
-Association} 102, 901--912.
+The main workflow is \code{csm_spec()}, \code{csm_fit()}, \code{csm_lfdr()},
+and \code{csm_stepup()}.  The convenience function \code{csm_test()} combines
+the final two steps.  \code{csm_adjust()} is an optional order-enforcing
+post-processing operation; it is not another mixture fit.  Convergence status
+and diagnostics should be inspected before scientific interpretation.
 
-Meng, X.-L., and Rubin, D. B. (1993). Maximum likelihood estimation via the
-ECM algorithm: a general framework. \emph{Biometrika} 80, 267--278.
+This software extends the csmGmm framework of Sun, McCaw, and Lin (2025),
+doi:10.1080/01621459.2024.2422124.
 }
-\keyword{package}
+\docType{package}

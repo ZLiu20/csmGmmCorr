@@ -1,6 +1,6 @@
-citHeader("To cite csmGmmCorr in publications, cite the software and the csmGmm article:")
+citHeader("To cite csmGmmCorr, cite the software and the csmGmm article:")
 
-bibentry(
+header <- bibentry(
   bibtype = "Manual",
   title = "csmGmmCorr: Correlated Conditionally Symmetric Multidimensional Gaussian Mixtures for Composite Null Testing",
   author = c(person("Z.", "Liu")),
@@ -13,7 +13,7 @@ bibentry(
   )
 )
 
-bibentry(
+article <- bibentry(
   bibtype = "Article",
   title = "Testing a Large Number of Composite Null Hypotheses Using Conditionally Symmetric Multidimensional Gaussian Mixtures in Genome-Wide Studies",
   author = c(person("Ryan", "Sun"), person("Zachary", "McCaw"), person("Xihong", "Lin")),
@@ -29,3 +29,5 @@ bibentry(
     "Association 120, 605-617. doi:10.1080/01621459.2024.2422124."
   )
 )
+
+c(header, article)
