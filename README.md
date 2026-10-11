@@ -26,7 +26,7 @@ One fit serves three targets and every threshold *t*:
 
 ```r
 # install.packages("remotes")
-remotes::install_github("<github-user>/csmGmmCorr")
+remotes::install_github("ZLiu20/csmGmmCorr")
 ```
 
 The package depends only on base R (`stats`). It contains a small C kernel, so a C
