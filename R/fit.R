@@ -1,411 +1,406 @@
-# Constrained ECM estimation from multiple starting values.
+# Constrained ECM fitting from several starting values (main-text Section 3.2
+# and Supplementary Section S2).
 
-.check_fix_sigma <- function(value) {
-  if (is.matrix(value)) {
-    if (!is.numeric(value) || nrow(value) != ncol(value) || any(!is.finite(value)) ||
-        max(abs(value - t(value))) > 1e-10 || max(abs(diag(value) - 1)) > 1e-10 ||
-        min(eigen(value, symmetric = TRUE, only.values = TRUE)$values) <= 0) {
-      stop("'fix_sigma' must be FALSE, TRUE, or a positive-definite correlation matrix.",
-           call. = FALSE)
-    }
-    return((value + t(value)) / 2)
-  }
-  if (!is.logical(value) || length(value) != 1L || is.na(value)) {
-    stop("'fix_sigma' must be FALSE, TRUE, or a positive-definite correlation matrix.",
-         call. = FALSE)
-  }
-  value
-}
-
-#' Control parameters for correlated csmGmm fitting
-#' @export
+# ---- Control parameters for csm_fit ----
 csm_control <- function(max_iter = 5000L, tol_loglik = NULL, tol_param = Inf,
-                        accelerate = TRUE, warm_n = 0L, penalty = 30,
-                        weight_penalty = 10, block_cells = 5e6,
-                        sigma_steps = 50L, fix_sigma = FALSE, cores = 1L,
-                        verbose = FALSE) {
-  max_iter <- .check_integer_scalar(max_iter, "max_iter", 1L, .Machine$integer.max)
-  if (!is.null(tol_loglik)) tol_loglik <- .check_numeric_scalar(tol_loglik, "tol_loglik", 0, Inf)
+                        accelerate = TRUE, warm_n = 0L, penalty = 30, weight_penalty = 10,
+                        block_cells = 5e6,
+                        sigma_steps = 50L, fix_sigma = FALSE, cores = 1L, verbose = FALSE) {
+  .check_scalar(penalty, "penalty", 0)
+  .check_scalar(weight_penalty, "weight_penalty", 0)
+  .check_scalar(warm_n, "warm_n", 0)
+  .check_scalar(cores, "cores", 1)
+  .check_scalar(max_iter, "max_iter", 1)
+  if (!is.null(tol_loglik)) .check_scalar(tol_loglik, "tol_loglik", 0)
   if (!is.numeric(tol_param) || length(tol_param) != 1L || is.na(tol_param) || tol_param < 0) {
     stop("'tol_param' must be a nonnegative number or Inf.", call. = FALSE)
   }
-  warm_n <- .check_integer_scalar(warm_n, "warm_n", 0L, .Machine$integer.max)
-  penalty <- .check_numeric_scalar(penalty, "penalty", 0, Inf)
-  weight_penalty <- .check_numeric_scalar(weight_penalty, "weight_penalty", 0, Inf)
-  block_cells <- .check_numeric_scalar(block_cells, "block_cells", 1000, Inf)
-  sigma_steps <- .check_integer_scalar(sigma_steps, "sigma_steps", 0L, .Machine$integer.max)
-  cores <- .check_integer_scalar(cores, "cores", 1L, .Machine$integer.max)
-  list(max_iter = max_iter, tol_loglik = tol_loglik, tol_param = tol_param,
-       accelerate = isTRUE(accelerate), warm_n = warm_n, penalty = penalty,
-       weight_penalty = weight_penalty, block_cells = block_cells,
-       sigma_steps = sigma_steps, fix_sigma = .check_fix_sigma(fix_sigma),
-       cores = cores, verbose = isTRUE(verbose))
+  .check_scalar(block_cells, "block_cells", 1e3)
+  .check_scalar(sigma_steps, "sigma_steps", 0)
+  list(max_iter = as.integer(max_iter), tol_loglik = tol_loglik, tol_param = tol_param,
+       warm_n = as.integer(warm_n), penalty = as.numeric(penalty),
+       weight_penalty = as.numeric(weight_penalty),
+       accelerate = isTRUE(accelerate), block_cells = block_cells,
+       sigma_steps = as.integer(sigma_steps), fix_sigma = .check_fix_sigma(fix_sigma), cores = as.integer(cores),
+       verbose = isTRUE(verbose))
 }
 
+# fix_sigma: FALSE (estimate Sigma), TRUE (Sigma fixed at the identity) or a correlation
+# matrix at which Sigma is fixed (e.g. a plug-in estimate).
+.check_fix_sigma <- function(x) {
+  if (is.matrix(x)) {
+    if (!is.numeric(x) || nrow(x) != ncol(x) || any(!is.finite(x)) || max(abs(x - t(x))) > 1e-10 ||
+        max(abs(diag(x) - 1)) > 1e-10 || min(eigen(x, TRUE, TRUE)$values) <= 0) {
+      stop("'fix_sigma' must be TRUE, FALSE or a positive definite correlation matrix.", call. = FALSE)
+    }
+    return((x + t(x)) / 2)
+  }
+  if (!is.logical(x) || length(x) != 1L || is.na(x)) {
+    stop("'fix_sigma' must be TRUE, FALSE or a positive definite correlation matrix.", call. = FALSE)
+  }
+  x
+}
 .fixed_sigma <- function(control, K) {
-  value <- control$fix_sigma
-  if (is.matrix(value)) {
-    if (nrow(value) != K) stop("The fixed correlation matrix has the wrong dimension.", call. = FALSE)
-    return(value)
+  fs <- control$fix_sigma
+  if (is.matrix(fs)) {
+    if (nrow(fs) != K) stop("'fix_sigma' must be a K x K matrix.", call. = FALSE)
+    return(fs)
   }
-  if (isTRUE(value)) diag(K) else NULL
+  if (isTRUE(fs)) diag(K) else NULL
 }
 
-.ecm_map <- function(es, params, spec, XtX, control, n) {
-  next_params <- params
-  next_params$varpi <- .update_weights(es$T, spec, control$weight_penalty / n)
-  stats <- .mu_stats(es, spec)
-  if (control$penalty > 0) {
-    stats <- .penalize_mu_stats(stats, params$mu, spec, es$Omega, control$penalty / n)
+# One ECM map: with the responsibilities of `es` (computed at p), update the
+# weights, the magnitudes and the correlation matrix in turn.
+.ecm_map <- function(es, p, spec, XtX, control, N) {
+  pn <- p
+  pn$varpi <- .update_weights(es$T, spec, control$weight_penalty / N)
+  st <- .mu_stats(es, spec)
+  if (control$penalty > 0) st <- .penalize_mu_stats(st, p$mu, spec, es$Omega, control$penalty / N)
+  pn$mu <- .update_mu(st, spec, p$mu, es$Omega)
+  if (is.null(.fixed_sigma(control, spec$K))) {   # fixed Sigma: stays at its starting value
+    S <- .scatter(es, pn$mu, spec, XtX)
+    pn$Sigma <- .update_sigma(S, p$Sigma, spec$kappa, control$sigma_steps)
   }
-  next_params$mu <- .update_mu(stats, spec, params$mu, es$Omega)
-  if (is.null(.fixed_sigma(control, spec$K)) && control$sigma_steps > 0L) {
-    scatter <- .scatter(es, next_params$mu, spec, XtX)
-    next_params$Sigma <- .update_sigma(scatter, params$Sigma, spec$kappa,
-                                      control$sigma_steps)
+  pn
+}
+
+# Combination a * p0 + b * p1 + c * p2 of parameters, mapped back to the
+# feasible region. Weights are combined on the log scale and renormalized, so
+# extrapolation never sets a positive weight to zero (an ECM step cannot revive
+# a zero weight); magnitudes are projected onto the box and the ordering
+# constraint, and the correlation matrix onto {diag = 1, eigenvalues >= kappa}.
+.combine <- function(p0, p1, p2, a, b, c, spec) {
+  q <- p0
+  pos <- p0$varpi > 0 & p1$varpi > 0 & p2$varpi > 0
+  lw <- rep(-Inf, length(pos))
+  lw[pos] <- a * log(p0$varpi[pos]) + b * log(p1$varpi[pos]) + c * log(p2$varpi[pos])
+  # A weight may shrink by at most a factor 1000 relative to the last ECM step,
+  # so extrapolation cannot push small weights to numerically dead values.
+  lw[pos] <- pmax(lw[pos], log(p2$varpi[pos]) - log(1000))
+  lw[pos] <- lw[pos] - max(lw[pos])
+  q$varpi <- exp(lw) / sum(exp(lw))
+  q$mu <- .project_mu(a * p0$mu + b * p1$mu + c * p2$mu, spec)
+  q$Sigma <- .project_cor(a * p0$Sigma + b * p1$Sigma + c * p2$Sigma, spec$kappa)
+  q
+}
+
+.pdiff <- function(a, b) c(a$varpi - b$varpi, a$mu - b$mu, a$Sigma - b$Sigma)
+
+# Coordinates used for extrapolation: log weights (positive ones), magnitudes
+# and the correlation matrix.
+.ptrans <- function(p, pos) c(log(p$varpi[pos]), p$mu, p$Sigma)
+
+# Constrained ECM with SQUAREM acceleration (Varadhan and Roland, 2008). Each
+# cycle takes two ECM steps p -> p1 -> p2, extrapolates along them, projects
+# the extrapolated point onto the feasible region and applies one more ECM
+# step. The result is kept only if its log-likelihood is at least that of p2,
+# so the log-likelihood never decreases and every accepted point is feasible.
+# Acceleration changes the path to the maximum, not the model or the estimator.
+.fit_one <- function(X, spec, p0, control) {
+  # Default stopping tolerance: a remaining average log-likelihood increase of
+  # 0.01 / N, well within the O(1/N) deficit allowed by the FDR theory.
+  if (is.null(control$tol_loglik)) control$tol_loglik <- 0.01 / nrow(X)
+  XtX <- crossprod(X) / nrow(X)
+  est <- function(p) .estep(X, spec, p, block_cells = control$block_cells, cores = control$cores)
+  N <- nrow(X)
+  lam <- control$penalty
+  alw <- control$weight_penalty
+  map <- function(es, p) .ecm_map(es, p, spec, XtX, control, N)
+  # Objective: average log-likelihood minus (penalty / N) times the
+  # within-size dispersion of the magnitudes (zero when penalty = 0).
+  est0 <- est
+  est <- function(p) {
+    e <- est0(p)
+    e$J <- e$F - (if (lam > 0) lam * .mag_penalty(p$mu, spec) / N else 0) -
+      (if (alw > 0) alw * .weight_penalty(p$varpi, spec) / N else 0)
+    e
   }
-  fixed <- .fixed_sigma(control, spec$K)
-  if (!is.null(fixed)) next_params$Sigma <- fixed
-  structure(next_params, class = "csm_params")
-}
-
-.parameter_distance <- function(a, b) {
-  max(abs(c(a$varpi - b$varpi, a$mu - b$mu, a$Sigma - b$Sigma)))
-}
-
-.objective <- function(es, params, spec, control, n) {
-  es$F - control$penalty * .magnitude_penalty(params$mu, spec) / n -
-    control$weight_penalty * .weight_penalty(params$varpi, spec) / n
-}
-
-.combine_params <- function(p0, p1, p2, a, b, c, spec) {
-  result <- p0
-  positive <- p0$varpi > 0 & p1$varpi > 0 & p2$varpi > 0
-  log_weights <- rep(-Inf, length(p0$varpi))
-  log_weights[positive] <- a * log(p0$varpi[positive]) +
-    b * log(p1$varpi[positive]) + c * log(p2$varpi[positive])
-  log_weights[positive] <- pmax(log_weights[positive],
-                                log(p2$varpi[positive]) - log(1000))
-  maximum <- max(log_weights)
-  result$varpi <- exp(log_weights - maximum)
-  result$varpi <- result$varpi / sum(result$varpi)
-  result$mu <- .project_mu(a * p0$mu + b * p1$mu + c * p2$mu, spec)
-  result$Sigma <- .project_cor(a * p0$Sigma + b * p1$Sigma + c * p2$Sigma,
-                               spec$kappa)
-  structure(result, class = "csm_params")
-}
-
-.transformed_parameters <- function(params, positive = params$varpi > 0) {
-  c(log(params$varpi[positive]), params$mu, params$Sigma)
-}
-
-.aitken_gap <- function(values) {
-  n <- length(values)
-  if (n < 3L) return(Inf)
-  first <- values[n] - values[n - 1L]
-  previous <- values[n - 1L] - values[n - 2L]
-  if (first == 0 && previous == 0) return(0)
-  if (first <= 0 || previous <= 0) return(Inf)
-  ratio <- first / previous
-  if (ratio >= 1) return(Inf)
-  first / (1 - ratio)
-}
-
-.fit_one <- function(x, spec, initial, control) {
-  n <- nrow(x)
-  tolerance <- if (is.null(control$tol_loglik)) 0.01 / n else control$tol_loglik
-  XtX <- crossprod(x) / n
-  evaluate <- function(params) {
-    result <- .estep(x, spec, params, block_cells = control$block_cells,
-                     cores = control$cores)
-    result$J <- .objective(result, params, spec, control, n)
-    result
-  }
-  map <- function(estep, params) {
-    .ecm_map(estep, params, spec, XtX, control, n)
-  }
-
-  params <- structure(initial, class = "csm_params")
-  current <- evaluate(params)
-  trace <- current$J
+  p <- p0
+  es0 <- est(p)
+  trace <- es0$J
   status <- "max_iter"
   maps <- 0L
-  step_limit <- 1
-  cycle_values <- current$J
-  numerical_tolerance <- function(value) 1e-10 * (1 + abs(value))
+  eps <- function(F) 1e-10 * (1 + abs(F))
   next_report <- 50L
-
+  cycle_F <- es0$J
+  step_max <- 1
   while (maps < control$max_iter) {
-    first_params <- map(current, params)
-    first <- evaluate(first_params)
-    second_params <- map(first, first_params)
-    second <- evaluate(second_params)
+    p1 <- map(es0, p)
+    es1 <- est(p1)
+    p2 <- map(es1, p1)
+    es2 <- est(p2)
     maps <- maps + 2L
-    if (!is.finite(first$J) || !is.finite(second$J)) {
+    if (!is.finite(es1$J) || !is.finite(es2$J)) {
       status <- "nonfinite"
       break
     }
-    if (first$J < current$J - numerical_tolerance(current$J) ||
-        second$J < first$J - numerical_tolerance(first$J)) {
+    if (es1$J < es0$J - eps(es0$J) || es2$J < es1$J - eps(es1$J)) {
       status <- "likelihood_decrease"
       break
     }
-    trace <- c(trace, first$J, second$J)
-
-    gap <- .aitken_gap(c(current$J, first$J, second$J))
+    trace <- c(trace, es1$J, es2$J)
+    # Converged when the Aitken estimate from the two plain ECM steps and, with
+    # acceleration, the total gain over the last three cycles are both below
+    # the tolerance (a single quiet pair of steps can be misleading).
+    gap <- .aitken_gap(c(es0$J, es1$J, es2$J))
     if (control$accelerate) {
-      history <- c(cycle_values, second$J)
-      if (length(history) > 3L) {
-        gap <- max(gap, history[length(history)] - history[length(history) - 3L])
-      }
+      # also require a small total gain over the last three cycles
+      hist <- c(cycle_F, es2$J)
+      gap <- max(gap, if (length(hist) > 3L) hist[length(hist)] - hist[length(hist) - 3L] else Inf)
     }
-    distance <- .parameter_distance(second_params, first_params)
-    if (gap <= tolerance && distance <= control$tol_param) {
-      params <- second_params
-      current <- second
+    dpar <- max(abs(.pdiff(p2, p1)))
+    if (gap <= control$tol_loglik && dpar <= control$tol_param) {
+      p <- p2
+      es0 <- es2
       status <- "converged"
       break
     }
-
-    accepted_params <- second_params
-    accepted <- second
-
+    acc_p <- p2
+    acc_es <- es2
     if (control$accelerate) {
-      positive <- params$varpi > 0 & first_params$varpi > 0 & second_params$varpi > 0
-      theta0 <- .transformed_parameters(params, positive)
-      theta1 <- .transformed_parameters(first_params, positive)
-      theta2 <- .transformed_parameters(second_params, positive)
-      r <- theta1 - theta0
-      v <- theta2 - theta1 - r
-      norm_v <- sqrt(sum(v^2))
-      if (is.finite(norm_v) && norm_v > 0) {
-        alpha <- max(-step_limit, min(-1, -sqrt(sum(r^2)) / norm_v))
-        extrapolated <- .combine_params(params, first_params, second_params,
-                                        (1 + alpha)^2,
-                                        -2 * alpha * (1 + alpha), alpha^2, spec)
-        fixed <- .fixed_sigma(control, spec$K)
-        if (!is.null(fixed)) extrapolated$Sigma <- fixed
-        trial <- tryCatch({
-          extrapolated_estep <- evaluate(extrapolated)
-          trial_params <- map(extrapolated_estep, extrapolated)
-          trial_estep <- evaluate(trial_params)
-          list(params = trial_params, estep = trial_estep)
+      pos <- p$varpi > 0 & p1$varpi > 0 & p2$varpi > 0
+      r <- .ptrans(p1, pos) - .ptrans(p, pos)
+      v <- .ptrans(p2, pos) - .ptrans(p1, pos) - r
+      nv <- sqrt(sum(v^2))
+      if (nv > 0) {
+        alpha <- max(-step_max, min(-1, -sqrt(sum(r^2)) / nv))
+        pq <- .combine(p, p1, p2, (1 + alpha)^2, -2 * alpha * (1 + alpha), alpha^2, spec)
+        cand <- tryCatch({
+          esq <- est(pq)
+          p3 <- map(esq, pq)
+          list(p = p3, es = est(p3))
         }, error = function(e) NULL)
         maps <- maps + 1L
-        if (!is.null(trial) && is.finite(trial$estep$J) &&
-            trial$estep$J >= second$J) {
-          accepted_params <- trial$params
-          accepted <- trial$estep
-          trace <- c(trace, accepted$J)
-          if (alpha == -step_limit) step_limit <- 4 * step_limit
+        if (!is.null(cand) && is.finite(cand$es$J) && cand$es$J >= es2$J) {
+          acc_p <- cand$p
+          acc_es <- cand$es
+          trace <- c(trace, acc_es$J)
+          # Adaptive maximum step length, as in the SQUAREM package.
+          if (alpha <= -step_max) step_max <- 4 * step_max
         } else {
-          step_limit <- max(1, step_limit / 4)
+          step_max <- max(1, step_max / 4)
         }
       }
     }
-
-    cycle_values <- c(cycle_values, accepted$J)
-    params <- accepted_params
-    current <- accepted
+    cycle_F <- c(cycle_F, acc_es$J)
+    p <- acc_p
+    es0 <- acc_es
     if (control$verbose && maps >= next_report) {
-      message(sprintf("ECM maps %d: average log-likelihood %.10f", maps, current$F))
+      message(sprintf("  ECM steps %d: average log-likelihood %.10f", maps, es0$J))
       next_report <- next_report + 50L
     }
   }
-  list(params = params, loglik = current$F, objective = current$J,
+  list(params = structure(p, class = "csm_params"), loglik = es0$F, objective = es0$J,
        iterations = maps, status = status, trace = trace)
 }
 
-.warm_rows <- function(n, m) {
-  order(((seq_len(n) * 0.6180339887498949) %% 1))[seq_len(m)]
+.aitken_gap <- function(trace) {
+  n <- length(trace)
+  if (n < 3L) return(Inf)
+  d1 <- trace[n] - trace[n - 1L]
+  d0 <- trace[n - 1L] - trace[n - 2L]
+  if (d1 == 0 && d0 == 0) return(0)
+  if (d1 <= 0) return(Inf)
+  if (d0 <= 0) return(Inf)
+  a <- d1 / d0
+  if (a >= 1) return(Inf)
+  d1 / (1 - a)
 }
 
-.fit_warm <- function(x, spec, initial, control) {
-  n <- nrow(x)
+# Warm start: when N exceeds 3 * warm_n, the ECM algorithm is first run on a
+# fixed subset of warm_n features and then continued on all N features from
+# that point, with the full-data stopping rule. Only the starting point of the
+# full-data run changes; the estimator is still the full-data maximum.
+.warm_rows <- function(N, m) {
+  # deterministic, well-spread subset (golden-ratio scrambling, no RNG use)
+  sort(order((as.numeric(seq_len(N)) * 0.6180339887498949) %% 1)[seq_len(m)])
+}
+
+.fit_warm <- function(X, spec, p0, control) {
+  N <- nrow(X)
   m <- control$warm_n
-  if (m < 1L || n <= 3L * m) return(.fit_one(x, spec, initial, control))
-  preliminary <- .fit_one(x[.warm_rows(n, m), , drop = FALSE], spec, initial, control)
-  final <- .fit_one(x, spec, preliminary$params, control)
-  final$warm_iterations <- preliminary$iterations
-  final
+  if (m < 1L || N <= 3L * m) return(.fit_one(X, spec, p0, control))
+  sub <- .fit_one(X[.warm_rows(N, m), , drop = FALSE], spec, p0, control)
+  full <- .fit_one(X, spec, unclass(sub$params), control)
+  full$warm_iterations <- sub$iterations
+  full
 }
 
-.base_magnitudes <- function(x, spec) {
-  out <- apply(abs(x), 2L, function(values) {
-    selected <- values[values > 2]
-    if (length(selected) >= 5L) mean(selected) else 2.5
+# ---- Starting values --------------------------------------------------------
+.base_magnitudes <- function(X, spec) {
+  b <- apply(abs(X), 2, function(v) {
+    w <- v[v > 2]
+    if (length(w) >= 5L) mean(w) else 2.5
   })
-  upper <- if (is.null(spec$b_mu)) Inf else spec$b_mu
-  pmin(upper, pmax(spec$a_mu, out))
+  pmin(spec$b_mu, pmax(spec$a_mu, b))
 }
 
 .magnitudes_from_base <- function(base, spec) {
   G <- length(spec$grp_b)
-  mu <- matrix(0, G, spec$K)
+  K <- spec$K
+  nb <- 2L^K
+  MU <- matrix(0, G, K)
   for (g in which(spec$grp_b != 0L)) {
-    components <- spec$M[spec$grp_b[g] + 1L]
-    fraction <- if (spec$grp_b[g] == 2^spec$K - 1L) {
-      1 + 0.5 * (spec$grp_m[g] - 1L) / max(1L, components - 1L)
-    } else {
-      0.5 + 0.5 * spec$grp_m[g] / components
-    }
-    mu[g, spec$grp_A[g, ]] <- base[spec$grp_A[g, ]] * fraction
+    b <- spec$grp_b[g]
+    Mb <- spec$M[b + 1L]
+    m <- spec$grp_m[g]
+    f <- if (b == nb - 1L) 1 + 0.5 * (m - 1) / max(1, Mb - 1) else 0.5 + 0.5 * m / Mb
+    a <- spec$grp_A[g, ]
+    MU[g, a] <- base[a] * f
   }
-  .project_mu(mu, spec)
+  .project_mu(MU, spec)
 }
 
-.start_params <- function(x, spec, type = c("null", "equal", "shared")) {
-  type <- match.arg(type)
+.start_params <- function(X, spec, type) {
   G <- length(spec$grp_b)
-  weights <- switch(type,
+  base <- .base_magnitudes(X, spec)
+  varpi <- switch(type,
     equal = rep(1 / G, G),
-    null = c(0.5, rep(0.5 / (G - 1L), G - 1L)),
-    shared = rep(1 / G, G)
+    null = ifelse(spec$grp_b == 0L, 0.5, 0.5 / (G - 1L))
   )
-  list(varpi = weights, mu = .magnitudes_from_base(.base_magnitudes(x, spec), spec),
-       Sigma = diag(spec$K))
+  list(varpi = varpi, mu = .magnitudes_from_base(base, spec), Sigma = diag(spec$K))
 }
 
-.random_start <- function(x, spec, base) {
+.random_start <- function(X, spec, base_p) {
   G <- length(spec$grp_b)
-  weights <- base$varpi * exp(stats::rnorm(G, 0, 0.5))
-  weights <- weights / sum(weights)
-  mu <- .project_mu(base$mu * exp(matrix(stats::rnorm(G * spec$K, 0, 0.25), G)), spec)
-  rho <- stats::runif(1L, 0, 0.3)
-  Sigma <- .project_cor((1 - rho) * diag(spec$K) + rho, spec$kappa)
-  list(varpi = weights, mu = mu, Sigma = Sigma)
+  K <- spec$K
+  v <- base_p$varpi * exp(stats::rnorm(G, 0, 0.5))
+  v <- v / sum(v)
+  if (spec$magnitudes == "shared") {
+    mu <- .base_magnitudes(X, spec) * exp(stats::rnorm(K, 0, 0.25))
+    mu <- pmin(spec$b_mu, pmax(spec$a_mu, mu))
+    MU <- spec$grp_A * rep(mu, each = G)
+  } else {
+    MU <- base_p$mu * exp(stats::rnorm(G * K, 0, 0.25))
+    MU <- .project_mu(MU, spec)
+  }
+  rho <- stats::runif(1, 0, 0.3)
+  Sigma <- .project_cor((1 - rho) * diag(K) + rho, spec$kappa)
+  list(varpi = v, mu = MU, Sigma = Sigma)
 }
 
-.shared_start <- function(x, spec, control) {
-  restricted <- .make_spec(spec$K, 1L, spec$S, "shared", spec$a_mu,
-                           spec$b_mu, spec$kappa)
-  restricted_control <- control
-  restricted_control$penalty <- 0
-  restricted_control$weight_penalty <- 0
-  start <- .start_params(x, restricted, "null")
-  fixed <- .fixed_sigma(restricted_control, spec$K)
-  if (!is.null(fixed)) start$Sigma <- fixed
-  fit <- .fit_warm(x, restricted, start, restricted_control)
-  if (fit$status != "converged") stop("The shared-magnitude start did not converge.", call. = FALSE)
-  support_weight <- stats::setNames(fit$params$varpi, restricted$grp_b)
-  weights <- support_weight[as.character(spec$grp_b)] / spec$M[spec$grp_b + 1L]
-  weights <- as.numeric(weights / sum(weights))
-  base <- vapply(seq_len(spec$K), function(k) {
-    candidates <- fit$params$mu[restricted$grp_A[, k], k]
-    if (length(candidates)) max(candidates) else spec$a_mu
-  }, numeric(1))
-  list(varpi = weights, mu = .magnitudes_from_base(base, spec), Sigma = fit$params$Sigma)
+# Fit of the shared-magnitude restriction, embedded in the full model.
+.shared_start <- function(X, spec, control) {
+  sh <- .make_spec(spec$K, 1L, spec$S, "shared", spec$a_mu, spec$b_mu, spec$kappa)
+  ctl <- control
+  ctl$penalty <- 0
+  ctl$weight_penalty <- 0
+  st <- .start_params(X, sh, "null")
+  fs <- .fixed_sigma(ctl, spec$K)
+  if (!is.null(fs)) st$Sigma <- fs
+  f <- .fit_warm(X, sh, st, ctl)
+  mu_shared <- vapply(seq_len(spec$K), function(k) {
+    max(f$params$mu[sh$grp_A[, k], k])
+  }, 0)
+  vb <- f$params$varpi
+  names(vb) <- sh$grp_b
+  varpi <- vb[as.character(spec$grp_b)] / spec$M[spec$grp_b + 1L]
+  varpi <- as.vector(varpi) / sum(varpi)
+  list(varpi = varpi, mu = .magnitudes_from_base(mu_shared, spec), Sigma = f$params$Sigma)
 }
 
-#' Fit a correlated csmGmm
-#' @export
-csm_fit <- function(x, spec, starts = c("null", "equal", "shared"), n_random = 0L,
+# ---- Fit a correlated csmGmm ----
+csm_fit <- function(X, spec, starts = c("null", "equal", "shared"), n_random = 0L,
                     init = NULL, control = csm_control(), seed = NULL) {
   if (!inherits(spec, "csm_spec")) stop("'spec' must come from csm_spec().", call. = FALSE)
-  x <- .check_z(x, spec$K, "x")
-  if (nrow(x) < 2L) stop("'x' must have at least two rows.", call. = FALSE)
-  if (is.null(spec$b_mu)) spec$b_mu <- max(spec$a_mu + 1, ceiling(max(abs(x))) + 1)
+  X <- .check_z(X, spec$K, "X")
+  if (nrow(X) < 2L) stop("'X' must have at least two rows.", call. = FALSE)
+  if (is.null(spec$b_mu)) spec$b_mu <- max(spec$a_mu + 1, ceiling(max(abs(X))) + 1)
   starts <- unique(starts)
   if (!all(starts %in% c("null", "equal", "shared"))) {
-    stop("'starts' may contain only 'null', 'equal', and 'shared'.", call. = FALSE)
+    stop("'starts' may contain \"null\", \"equal\" and \"shared\".", call. = FALSE)
   }
-  if (identical(spec$magnitudes, "shared")) starts <- setdiff(starts, "shared")
-  n_random <- .check_integer_scalar(n_random, "n_random", 0L, .Machine$integer.max)
+  if (spec$magnitudes == "shared") starts <- setdiff(starts, "shared")
   if (!is.null(seed)) set.seed(seed)
   if (!is.null(init) && inherits(init, "csm_params")) init <- list(init)
-  if (is.null(init)) init <- list()
-
-  candidates <- stats::setNames(lapply(starts, function(type) {
-    if (type == "shared") {
-      tryCatch(.shared_start(x, spec, control), error = function(e) e)
-    } else {
-      .start_params(x, spec, type)
+  sl <- list()
+  for (s in starts) {
+    sl[[s]] <- if (s == "shared") {
+      tryCatch(.shared_start(X, spec, control), error = function(e) e)
+    } else .start_params(X, spec, s)
+  }
+  for (i in seq_len(n_random)) {
+    sl[[paste0("random", i)]] <- .random_start(X, spec, .start_params(X, spec, "null"))
+  }
+  # Fixed Sigma: the identity gives the csmGmm of Sun, McCaw and Lin (independence working
+  # model); a supplied correlation matrix gives a plug-in correlated fit.
+  fs <- .fixed_sigma(control, spec$K)
+  if (!is.null(fs)) {
+    if (min(eigen(fs, TRUE, TRUE)$values) < spec$kappa) {
+      stop("'fix_sigma' has an eigenvalue below kappa; project it first.", call. = FALSE)
     }
-  }), starts)
-  base <- .start_params(x, spec, "null")
-  if (n_random) {
-    random <- lapply(seq_len(n_random), function(i) .random_start(x, spec, base))
-    names(random) <- paste0("random", seq_len(n_random))
-    candidates <- c(candidates, random)
+    for (s in names(sl)) if (!inherits(sl[[s]], "error")) sl[[s]]$Sigma <- fs
   }
   for (i in seq_along(init)) {
-    problems <- .feasibility(init[[i]], spec)
-    if (length(problems)) {
-      stop(sprintf("init[[%d]] is infeasible: %s", i, paste(problems, collapse = "; ")),
-           call. = FALSE)
-    }
-    candidates[[paste0("init", i)]] <- unclass(init[[i]])
+    p <- init[[i]]
+    bad <- .feasibility(p, spec)
+    if (length(bad)) stop(sprintf("init[[%d]] is infeasible: %s.", i, paste(bad, collapse = "; ")), call. = FALSE)
+    sl[[paste0("init", i)]] <- unclass(p)
   }
-  fixed <- .fixed_sigma(control, spec$K)
-  if (!is.null(fixed)) {
-    if (min(eigen(fixed, symmetric = TRUE, only.values = TRUE)$values) < spec$kappa) {
-      stop("The fixed correlation matrix has an eigenvalue below kappa.", call. = FALSE)
+  if (!length(sl)) stop("No starting values requested.", call. = FALSE)
+  runs <- vector("list", length(sl))
+  names(runs) <- names(sl)
+  for (s in names(sl)) {
+    if (control$verbose) message("Start: ", s)
+    runs[[s]] <- if (inherits(sl[[s]], "error")) {
+      list(status = "error", message = conditionMessage(sl[[s]]), loglik = NA_real_, objective = NA_real_,
+           iterations = 0L)
+    } else {
+      tryCatch(.fit_warm(X, spec, sl[[s]], control), error = function(e) {
+        list(status = "error", message = conditionMessage(e), loglik = NA_real_, objective = NA_real_,
+             iterations = 0L)
+      })
     }
-    candidates <- lapply(candidates, function(value) {
-      if (!inherits(value, "error")) value$Sigma <- fixed
-      value
-    })
   }
-  if (!length(candidates)) stop("No starting values were requested.", call. = FALSE)
-
-  runs <- lapply(candidates, function(candidate) {
-    if (inherits(candidate, "error")) {
-      return(list(status = "error", message = conditionMessage(candidate),
-                  loglik = NA_real_, objective = NA_real_, iterations = 0L,
-                  trace = numeric()))
-    }
-    tryCatch(.fit_warm(x, spec, candidate, control), error = function(e) {
-      list(status = "error", message = conditionMessage(e), loglik = NA_real_,
-           objective = NA_real_, iterations = 0L, trace = numeric())
-    })
-  })
   summary <- data.frame(
     start = names(runs),
-    status = vapply(runs, `[[`, character(1), "status"),
-    iterations = vapply(runs, function(run) as.integer(run$iterations), integer(1)),
-    warm_iterations = vapply(runs, function(run) if (is.null(run$warm_iterations)) NA_integer_ else as.integer(run$warm_iterations), integer(1)),
-    loglik = vapply(runs, function(run) as.numeric(run$loglik), numeric(1)),
-    objective = vapply(runs, function(run) as.numeric(run$objective), numeric(1)),
-    stringsAsFactors = FALSE
+    status = vapply(runs, function(r) r$status, ""),
+    iterations = vapply(runs, function(r) as.integer(r$iterations), 0L),
+    warm_iterations = vapply(runs, function(r) if (is.null(r$warm_iterations)) NA_integer_
+                             else as.integer(r$warm_iterations), 0L),
+    loglik = vapply(runs, function(r) r$loglik, 0),
+    objective = vapply(runs, function(r) if (is.null(r$objective)) NA_real_ else r$objective, 0),
+    stringsAsFactors = FALSE, row.names = NULL
   )
-  eligible <- which(summary$status == "converged")
-  if (!length(eligible)) eligible <- which(is.finite(summary$objective))
-  selected <- if (length(eligible)) eligible[which.max(summary$objective[eligible])] else NA_integer_
+  # Fits are compared by the objective they maximize: the penalized
+  # log-likelihood (equal to the log-likelihood when both penalties are 0).
+  ok <- which(summary$status == "converged")
+  converged <- length(ok) > 0L
+  pick <- if (converged) ok[which.max(summary$objective[ok])] else {
+    fin <- which(is.finite(summary$objective))
+    if (length(fin)) fin[which.max(summary$objective[fin])] else NA_integer_
+  }
   structure(list(
-    params = if (is.na(selected)) NULL else structure(runs[[selected]]$params, class = "csm_params"),
-    loglik = if (is.na(selected)) NA_real_ else runs[[selected]]$loglik,
-    objective = if (is.na(selected)) NA_real_ else runs[[selected]]$objective,
-    selected = if (is.na(selected)) NA_character_ else summary$start[selected],
-    converged = !is.na(selected) && summary$status[selected] == "converged",
+    params = if (is.na(pick)) NULL else runs[[pick]]$params,
+    loglik = if (is.na(pick)) NA_real_ else runs[[pick]]$loglik,
+    objective = if (is.na(pick)) NA_real_ else runs[[pick]]$objective,
+    selected = if (is.na(pick)) NA_character_ else summary$start[pick],
+    converged = converged,
     runs = summary,
-    traces = lapply(runs, `[[`, "trace"),
-    spec = spec,
-    n = nrow(x),
-    control = control
+    traces = lapply(runs, function(r) r$trace),
+    spec = spec, n = nrow(X), control = control
   ), class = "csm_fit")
 }
 
-#' @export
 print.csm_fit <- function(x, ...) {
   cat("Correlated csmGmm fit\n")
-  cat(sprintf("  K = %d, N = %d, largest support size = %d\n", x$spec$K, x$n, x$spec$S))
+  cat(sprintf("  K = %d, N = %d, largest support size %d, %d support-component pairs\n",
+              x$spec$K, x$n, x$spec$S, length(x$spec$grp_b)))
   if (x$converged) {
-    cat(sprintf("  selected start: %s; average log-likelihood: %.6f\n", x$selected, x$loglik))
+    cat(sprintf("  selected start: %s, average log-likelihood %.6f\n", x$selected, x$loglik))
   } else {
-    cat("  no starting value converged; inference defaults to no discoveries\n")
+    cat("  NO START CONVERGED: the analysis is recorded as a failure and makes no discoveries.\n")
   }
   print(x$runs, row.names = FALSE)
   invisible(x)
 }
 
-#' @export
 logLik.csm_fit <- function(object, ...) {
-  spec <- object$spec
-  G <- length(spec$grp_b)
-  n_weights <- G - 1L
-  n_magnitudes <- if (identical(spec$magnitudes, "shared")) spec$K else sum(spec$grp_A)
-  fixed <- .fixed_sigma(object$control, spec$K)
-  n_correlation <- if (is.null(fixed)) spec$K * (spec$K - 1L) / 2 else 0
-  structure(object$loglik * object$n, df = n_weights + n_magnitudes + n_correlation,
+  sp <- object$spec
+  G <- length(sp$grp_b)
+  n_w <- G - 1L
+  n_mu <- if (sp$magnitudes == "shared") sp$K else sum(sp$grp_A)
+  n_sig <- if (is.null(.fixed_sigma(object$control, sp$K))) sp$K * (sp$K - 1L) / 2 else 0
+  structure(object$loglik * object$n, df = n_w + n_mu + n_sig,
             nobs = object$n, class = "logLik")
 }

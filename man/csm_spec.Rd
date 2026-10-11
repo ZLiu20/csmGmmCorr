@@ -1,42 +1,47 @@
 \name{csm_spec}
 \alias{csm_spec}
-\alias{csm_structure}
+\alias{print.csm_spec}
 \title{Specify a correlated csmGmm}
+\description{
+Fixes the model structure and the parameter region before fitting: the number
+of statistics, the magnitude components of each support, the largest support
+size, the magnitude box and the eigenvalue bound on the correlation matrix.
+Every support has its own weights and magnitudes, as in csmGmm.
+}
 \usage{
-csm_spec(K, M = csm_structure(K, 2L, 1L), S = K,
-  a_mu = 0.5, b_mu = NULL, kappa = 0.05)
-csm_structure(K, single = 2L, multiple = 1L)
+csm_spec(K, M = csm_structure(K, 2L, 1L), S = K, a_mu = 0.5, b_mu = NULL, kappa = 0.05)
+
+\method{print}{csm_spec}(x, ...)
 }
 \arguments{
-\item{K}{Number of statistic coordinates.}
-\item{M}{Number of magnitude components for every binary support.}
-\item{S}{Largest support size retained in the model.}
-\item{a_mu, b_mu}{Lower and optional upper bounds for active magnitudes.}
-\item{kappa}{Lower bound on eigenvalues of the common correlation matrix.}
-\item{single, multiple}{Component counts for size-one and larger supports.}
+\item{K}{number of statistics per feature (2 to 12).}
+\item{M}{number of magnitude components per support: a single integer, or a
+vector of length \eqn{2^K} whose element \eqn{b+1} refers to the support with
+binary label \eqn{b} (coordinate 1 is the most significant bit, as in csmGmm).
+The null support always has one component. The default,
+\code{csm_structure(K, 2, 1)}, gives two components to each support of size one
+and one component to each larger support (the structure of the example in Sun,
+McCaw and Lin, 2025): supports of size one carry most non-null features and their
+effect sizes are the most heterogeneous. \code{M = 1} gives one component per support.}
+\item{S}{largest support size represented. \code{S = K} (default) is the
+correlated csmGmm; \code{S < K} truncates it to supports of size at most
+\code{S}, keeping support-specific weights, magnitudes and the ordering
+constraint for the supports retained. The ordering constraint involves the
+full support and is therefore vacuous when \code{S < K}.}
+\item{a_mu, b_mu}{lower and upper bounds on the magnitudes. If \code{b_mu} is
+\code{NULL}, \code{\link{csm_fit}} sets it to \code{ceiling(max(abs(X))) + 1}.}
+\item{kappa}{lower bound on the eigenvalues of the correlation matrix; it
+should not exceed the smallest eigenvalue of the null-statistic correlation.}
+\item{x}{a \code{csm_spec} object.}
+\item{...}{ignored.}
 }
-\value{\code{csm_spec()} returns a model specification. \code{csm_structure()}
-returns an integer vector of length \eqn{2^K}.}
-\description{Build the finite state space and magnitude-component structure
-used by a correlated csmGmm fit.}
+\value{An object of class \code{csm_spec}.}
 \details{
-Supports are represented by integers from zero through \eqn{2^K-1}.  The
-first coordinate is the most significant bit.  A support of size \eqn{s}
-contributes \eqn{2^s} signed configurations, but the implementation evaluates
-opposite signs as a pair without deleting either state.
-
-\code{M[b + 1]} is the number of magnitude components for support \code{b}.
-\code{S} is a modeling restriction: supports larger than \code{S} are absent,
-so using \code{S < K} changes the fitted probability model.  In contrast,
-\code{block_cells} and \code{cores} in other functions change computation but
-not the retained state space.
-
-For the full state space use \code{S = K}.  The default structure gives two
-components to size-one supports and one component to every larger support.
+The ordering constraint requires every full-support magnitude component to be at
+least as large, coordinatewise, as every magnitude component of every other
+support.
 }
 \examples{
-structure <- csm_structure(4, single = 2, multiple = 1)
-spec <- csm_spec(4, M = structure, S = 4, b_mu = 15)
+spec <- csm_spec(4)
 spec
-table(spec$grp_size)
 }
